@@ -10,7 +10,6 @@ import (
 	"syscall"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 /* TODO:
@@ -52,17 +51,9 @@ func main() {
 		return
 	}
 
-	var hostkeyCallback ssh.HostKeyCallback
-	hostkeyCallback, err = knownhosts.New("~/.ssh/known_hosts")
-	if err != nil {
-		/* NOTE: fallback to ignoring everything as we don't care :) */
-		fmt.Fprintln(os.Stderr, "WARNING: falling back to 'ssh.InsecureIgnoreHostKey()'")
-		hostkeyCallback = ssh.InsecureIgnoreHostKey()
-	}
-
 	conf := &ssh.ClientConfig{
 		User:            user,
-		HostKeyCallback: hostkeyCallback,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Auth: []ssh.AuthMethod{
 			ssh.Password(pwd),
 		},
