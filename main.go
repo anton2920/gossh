@@ -128,7 +128,7 @@ func main() {
 	session.Shell()
 
 	sigChan := make(chan os.Signal)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	signal.Notify(sigChan, syscall.SIGINT)
 
 	/* NOTE: main loop */
 	const prompt = "% "
@@ -140,10 +140,6 @@ mainFor:
 			switch signal {
 			case syscall.SIGINT:
 				session.Signal(ssh.SIGINT)
-			case syscall.SIGTERM:
-				session.Signal(ssh.SIGTERM)
-			case syscall.SIGQUIT:
-				session.Signal(ssh.SIGQUIT)
 			}
 		case outstr, ok := <-outChan:
 			if !ok {
