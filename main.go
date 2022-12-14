@@ -2,49 +2,43 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
-	"io"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 
 	"golang.org/x/crypto/ssh"
 )
 
-/* TODO:
- * 1. Better prompt handling.
- * 2. Infinite execution.
- * 3. Proper signal handling.
- */
-
 func printUsageAndExit() {
-	fmt.Fprintln(os.Stderr, "usage: gossh user@server")
+	fmt.Fprintln(os.Stderr, "usage: gossh [-t] [user@]address[:port]")
 	os.Exit(1)
 }
 
 func main() {
 	var host, user, pwd string
 
-	if len(os.Args) != 2 {
+	if (len(os.Args) < 2) || (len(os.Args) > 3) {
 		printUsageAndExit()
 	}
 
-	args := strings.Split(os.Args[1], "@")
+	vt := flag.Bool("t", false, "enables VT100 mode")
+	flag.Parse()
+
+	args := strings.Split(flag.Args()[0], "@")
 	if len(args) == 1 {
 		user = "glenda"
 		host = args[0]
 	} else if len(args) == 2 {
 		user = args[0]
 		host = args[1]
-	} else {
-		printUsageAndExit()
 	}
+
 	if strings.Index(host, ":") == -1 {
 		host += ":22"
 	}
 
-	fmt.Print("Password: ")
+	fmt.Printf("Password for %s@%s: ", user, host)
 	_, err := fmt.Scanf("%s", &pwd)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to scan password: ", err)
@@ -68,111 +62,70 @@ func main() {
 	}
 	defer conn.Close()
 
-	var session *ssh.Session
-	var stdin io.WriteCloser
-	var stdout, stderr io.Reader
-
-	session, err = conn.NewSession()
+	session, err := conn.NewSession()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to open a session: ", err)
 		return
 	}
 	defer session.Close()
 
-	stdin, err = session.StdinPipe()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to get stdin pipe: ", err)
-		return
-	}
+	session.Stdout = os.Stdout
+	session.Stderr = os.Stderr
 
-	stdout, err = session.StdoutPipe()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to get stdout pipe: ", err)
-		return
-	}
-
-	stderr, err = session.StderrPipe()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to get stderr pipe: ", err)
-		return
-	}
-
-	scannerFunc := func(reader io.Reader, sendChan chan<- string) {
-		scanner := bufio.NewScanner(reader)
-
-		for scanner.Scan() {
-			sendChan <- scanner.Text()
+	if *vt {
+		modes := ssh.TerminalModes{
+			ssh.ECHO:          0,     // disable echoing
+			ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4kbaud
+			ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4kbaud
 		}
-		if reader != stderr {
-			close(sendChan)
+
+		err = session.RequestPty("xterm", 24, 80, modes)
+		if err != nil {
+			fmt.Fprint(os.Stderr, "Failed to request pseudo terminal: ", err)
+			return
 		}
 	}
 
-	inChan := make(chan string)
-	outChan := make(chan string, 128)
-
-	go scannerFunc(os.Stdin, inChan)
-	go scannerFunc(stdout, outChan)
-	go scannerFunc(stderr, outChan)
-
-	promptChan := make(chan struct{}, 1)
-	session.Shell()
-
-	sigChan := make(chan os.Signal)
-	signal.Notify(sigChan, syscall.SIGINT)
-
-	/* NOTE: main loop */
-	const prompt = "% "
-
-	if len(promptChan) == 0 {
-		promptChan <- struct{}{}
+	/* NOTE: handling stdin ourselves, so we can gracefully handle EOF */
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		fmt.Fprint(os.Stderr, "Failed to get stdin pipe: ", err)
+		return
 	}
-mainFor:
-	for {
-		select {
-		case signal := <-sigChan:
-			switch signal {
-			case syscall.SIGINT:
-				session.Signal(ssh.SIGINT)
-			}
-		case outstr, ok := <-outChan:
-			if !ok {
-				break mainFor
+	go func() {
+		isEOF := false
+		for !isEOF {
+			/* NOTE: when in non-VT mode, we need to do a prompt ourselves */
+			if !*vt {
+				fmt.Print("% ")
 			}
 
-			fmt.Println(outstr)
-
-			/* NOTE: draining output channel */
-		outputFor:
-			for {
-				select {
-				case outstr := <-outChan:
-					fmt.Println(outstr)
-				default:
-					break outputFor
+			scanner := bufio.NewScanner(os.Stdin)
+			if !scanner.Scan() {
+				if err := scanner.Err(); err == nil {
+					isEOF = true
+				} else {
+					fmt.Fprint(os.Stderr, "Failed to scan line from stdin: ", err)
+					return
 				}
 			}
-
-			if len(promptChan) == 0 {
-				promptChan <- struct{}{}
-			}
-		case instr, ok := <-inChan:
-			if !ok {
-				break mainFor
-			}
-			_, err := stdin.Write([]byte(instr + "\n"))
+		
+			_, err := stdin.Write([]byte(scanner.Text() + "\n"))
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "Failed to send a command: ", err)
+				fmt.Fprint(os.Stderr, "Failed to write to server's stdin: ", err)
 				return
 			}
-
-			if len(promptChan) == 0 {
-				promptChan <- struct{}{}
-			}
-		case <-promptChan:
-			fmt.Print(prompt)
 		}
+		fmt.Println("Got EOF")
+		session.Close()			
+	}()
+
+	err = session.Shell()
+	if err != nil {
+		fmt.Fprint(os.Stderr, "Failed to start interactive shell: ", err)
+		return
 	}
 
+	session.Wait()
 	fmt.Println()
 }
