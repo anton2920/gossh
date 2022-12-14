@@ -133,6 +133,9 @@ func main() {
 	/* NOTE: main loop */
 	const prompt = "% "
 
+	if len(promptChan) == 0 {
+		promptChan <- struct{}{}
+	}
 mainFor:
 	for {
 		select {
@@ -170,6 +173,10 @@ mainFor:
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "Failed to send a command: ", err)
 				return
+			}
+
+			if len(promptChan) == 0 {
+				promptChan <- struct{}{}
 			}
 		case <-promptChan:
 			fmt.Print(prompt)
